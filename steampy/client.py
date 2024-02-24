@@ -9,7 +9,7 @@ import requests
 
 from steampy import guard
 from steampy.confirmation import ConfirmationExecutor
-from steampy.exceptions import SevenDaysHoldException, ApiException
+from steampy.exceptions import SevenDaysHoldException, ApiException, TooManyRequests
 from steampy.login import LoginExecutor, InvalidCredentials
 from steampy.market import SteamMarket
 from steampy.models import Asset, TradeOfferState, SteamUrl, GameOptions
@@ -163,14 +163,18 @@ class SteamClient:
         url = '/'.join((SteamUrl.COMMUNITY_URL, 'inventory', partner_steam_id, game.app_id, game.context_id))
         params = {'l': 'english', 'count': count}
 
-        response_dict = self._session.get(url, params=params).json()
+        full_response = self._session.get(url, params=params)
+        response_dict = full_response.json()
+        if full_response.status_code == 429:
+            raise TooManyRequests('Too many requests, try again later.')
+
         if response_dict is None or response_dict.get('success') != 1:
             raise ApiException('Success value should be 1.')
 
         return merge_items_with_descriptions_from_inventory(response_dict, game) if merge else response_dict
 
     def _get_session_id(self) -> str:
-        return self._session.cookies.get_dict()['sessionid']
+        return self._session.cookies.get_dict(domain="steamcommunity.com")['sessionid']
 
     def get_trade_offers_summary(self) -> dict:
         params = {'key': self._api_key}

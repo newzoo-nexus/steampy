@@ -164,4 +164,3 @@ class LoginExecutor:
             'Origin': 'https://steamcommunity.com'
         }
         return self.session.post("https://login.steampowered.com/jwt/finalizelogin", headers = headers, files = files)
-    

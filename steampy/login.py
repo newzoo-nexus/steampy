@@ -1,13 +1,18 @@
-from http import HTTPStatus
-from base64 import b64encode
+from __future__ import annotations
 
-from rsa import encrypt, PublicKey
-from requests import Session, Response
+from base64 import b64encode
+from http import HTTPStatus
+from typing import TYPE_CHECKING
+
+from rsa import PublicKey, encrypt
 
 from steampy import guard
+from steampy.exceptions import ApiException, CaptchaRequired, InvalidCredentials
 from steampy.models import SteamUrl
 from steampy.utils import create_cookie
-from steampy.exceptions import InvalidCredentials, CaptchaRequired, ApiException
+
+if TYPE_CHECKING:
+    from requests import Response, Session
 
 
 class LoginExecutor:
@@ -19,16 +24,15 @@ class LoginExecutor:
         self.session = session
         self.refresh_token = ''
 
-    def _api_call(self, method: str, service: str, endpoint: str, version: str = 'v1', params: dict = None) -> Response:
-        url = '/'.join((SteamUrl.API_URL, service, endpoint, version))
+    def _api_call(self, method: str, service: str, endpoint: str, version: str = 'v1', params: dict | None = None) -> Response:
+        url = f'{SteamUrl.API_URL}/{service}/{endpoint}/{version}'
         # All requests from the login page use the same 'Referer' and 'Origin' values
         headers = {'Referer': f'{SteamUrl.COMMUNITY_URL}/', 'Origin': SteamUrl.COMMUNITY_URL}
         if method.upper() == 'GET':
             return self.session.get(url, params=params, headers=headers)
         if method.upper() == 'POST':
             return self.session.post(url, data=params, headers=headers)
-        else:
-            raise ValueError('Method must be either GET or POST')
+        raise ValueError('Method must be either GET or POST')
 
     def login(self) -> Session:
         login_response = self._send_login_request()
@@ -135,7 +139,7 @@ class LoginExecutor:
 
         update_data = {'client_id': client_id, 'steamid': steamid, 'code_type': code_type, 'code': code}
         response = self._api_call(
-            'POST', 'IAuthenticationService', 'UpdateAuthSessionWithSteamGuardCode', params=update_data
+            'POST', 'IAuthenticationService', 'UpdateAuthSessionWithSteamGuardCode', params=update_data,
         )
         if response.status_code == HTTPStatus.OK:
             self._pool_sessions_steam(client_id, request_id)
@@ -145,12 +149,7 @@ class LoginExecutor:
     def _pool_sessions_steam(self, client_id: str, request_id: str) -> None:
         pool_data = {'client_id': client_id, 'request_id': request_id}
         response = self._api_call('POST', 'IAuthenticationService', 'PollAuthSessionStatus', params=pool_data)
-        result = response.json()
-        try:
-            self.refresh_token = result['response']['refresh_token']
-        except KeyError:
-            logging.debug(f"Refresh token missing in login result: {result}")
-            raise
+        self.refresh_token = response.json()['response']['refresh_token']
 
     def _finalize_login(self) -> Response:
         sessionid = self.session.cookies['sessionid']
@@ -165,3 +164,4 @@ class LoginExecutor:
             'Origin': 'https://steamcommunity.com'
         }
         return self.session.post("https://login.steampowered.com/jwt/finalizelogin", headers = headers, files = files)
+    

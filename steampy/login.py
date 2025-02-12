@@ -25,8 +25,8 @@ class LoginExecutor:
         headers = {'Referer': f'{SteamUrl.COMMUNITY_URL}/', 'Origin': SteamUrl.COMMUNITY_URL}
         if method.upper() == 'GET':
             return self.session.get(url, params=params, headers=headers)
-        elif method.upper() == 'POST':
-            return self.session.post(url, params=params, headers=headers)
+        if method.upper() == 'POST':
+            return self.session.post(url, data=params, headers=headers)
         else:
             raise ValueError('Method must be either GET or POST')
 

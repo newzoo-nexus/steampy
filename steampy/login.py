@@ -1,14 +1,18 @@
-from http import HTTPStatus
-import logging
-from base64 import b64encode
+from __future__ import annotations
 
-from rsa import encrypt, PublicKey
-from requests import Session, Response
+from base64 import b64encode
+from http import HTTPStatus
+from typing import TYPE_CHECKING
+
+from rsa import PublicKey, encrypt
 
 from steampy import guard
+from steampy.exceptions import ApiException, CaptchaRequired, InvalidCredentials
 from steampy.models import SteamUrl
 from steampy.utils import create_cookie
-from steampy.exceptions import InvalidCredentials, CaptchaRequired, ApiException
+
+if TYPE_CHECKING:
+    from requests import Response, Session
 
 
 class LoginExecutor:
@@ -20,16 +24,15 @@ class LoginExecutor:
         self.session = session
         self.refresh_token = ''
 
-    def _api_call(self, method: str, service: str, endpoint: str, version: str = 'v1', params: dict = None) -> Response:
-        url = '/'.join((SteamUrl.API_URL, service, endpoint, version))
+    def _api_call(self, method: str, service: str, endpoint: str, version: str = 'v1', params: dict | None = None) -> Response:
+        url = f'{SteamUrl.API_URL}/{service}/{endpoint}/{version}'
         # All requests from the login page use the same 'Referer' and 'Origin' values
         headers = {'Referer': f'{SteamUrl.COMMUNITY_URL}/', 'Origin': SteamUrl.COMMUNITY_URL}
         if method.upper() == 'GET':
             return self.session.get(url, params=params, headers=headers)
-        elif method.upper() == 'POST':
+        if method.upper() == 'POST':
             return self.session.post(url, data=params, headers=headers)
-        else:
-            raise ValueError('Method must be either GET or POST')
+        raise ValueError('Method must be either GET or POST')
 
     def login(self) -> Session:
         login_response = self._send_login_request()
@@ -49,20 +52,28 @@ class LoginExecutor:
         request_data = self._prepare_login_request_data(encrypted_password, rsa_timestamp)
         return self._api_call('POST', 'IAuthenticationService', 'BeginAuthSessionViaCredentials', params=request_data)
 
-    def set_sessionid_cookies(self):
+    def set_sessionid_cookies(self) -> None:
         community_domain = SteamUrl.COMMUNITY_URL[8:]
-        community_cookie_dic = self.session.cookies.get_dict(domain = community_domain)
+        store_domain = SteamUrl.STORE_URL[8:]
+        community_cookie_dic = self.session.cookies.get_dict(domain=community_domain)
+        store_cookie_dic = self.session.cookies.get_dict(domain=store_domain)
         for name in ('steamLoginSecure', 'sessionid', 'steamRefresh_steam', 'steamCountry'):
             cookie = self.session.cookies.get_dict()[name]
+            if name == "steamLoginSecure":
+                store_cookie = create_cookie(name, store_cookie_dic[name], store_domain)
+            else:
+                store_cookie = create_cookie(name, cookie, store_domain)
+
             if name in ["sessionid", "steamLoginSecure"]:
                 community_cookie = create_cookie(name, community_cookie_dic[name], community_domain)
             else:
                 community_cookie = create_cookie(name, cookie, community_domain)
 
             self.session.cookies.set(**community_cookie)
+            self.session.cookies.set(**store_cookie)
 
     def _fetch_rsa_params(self, current_number_of_repetitions: int = 0) -> dict:
-        self.session.post(SteamUrl.COMMUNITY_URL)
+        self.session.get(SteamUrl.COMMUNITY_URL)
         request_data = {'account_name': self.username}
         response = self._api_call('GET', 'IAuthenticationService', 'GetPasswordRSAPublicKey', params=request_data)
 
@@ -112,8 +123,12 @@ class LoginExecutor:
         if parameters is None:
             raise Exception('Cannot perform redirects after login, no parameters fetched')
         for pass_data in parameters:
-            pass_data['params']['steamID'] = response_dict['steamID']
-            self.session.post(pass_data['url'], pass_data['params'])
+            pass_data['params'].update({'steamID': response_dict['steamID']})
+            multipart_fields = {
+                key: (None, str(value))
+                for key, value in pass_data['params'].items()
+            }
+            self.session.post(pass_data['url'], files = multipart_fields)
 
     def _update_steam_guard(self, login_response: Response) -> None:
         client_id = login_response.json()['response']['client_id']
@@ -124,7 +139,7 @@ class LoginExecutor:
 
         update_data = {'client_id': client_id, 'steamid': steamid, 'code_type': code_type, 'code': code}
         response = self._api_call(
-            'POST', 'IAuthenticationService', 'UpdateAuthSessionWithSteamGuardCode', params=update_data
+            'POST', 'IAuthenticationService', 'UpdateAuthSessionWithSteamGuardCode', params=update_data,
         )
         if response.status_code == HTTPStatus.OK:
             self._pool_sessions_steam(client_id, request_id)
@@ -134,16 +149,18 @@ class LoginExecutor:
     def _pool_sessions_steam(self, client_id: str, request_id: str) -> None:
         pool_data = {'client_id': client_id, 'request_id': request_id}
         response = self._api_call('POST', 'IAuthenticationService', 'PollAuthSessionStatus', params=pool_data)
-        result = response.json()
-        try:
-            self.refresh_token = result['response']['refresh_token']
-        except KeyError:
-            logging.debug(f"Refresh token missing in login result: {result}")
-            raise
+        self.refresh_token = response.json()['response']['refresh_token']
 
     def _finalize_login(self) -> Response:
         sessionid = self.session.cookies['sessionid']
         redir = f'{SteamUrl.COMMUNITY_URL}/login/home/?goto='
-        finalized_data = {'nonce': self.refresh_token, 'sessionid': sessionid, 'redir': redir}
-        response = self.session.post(SteamUrl.LOGIN_URL + '/jwt/finalizelogin', data=finalized_data)
-        return response
+        files = {
+            'nonce': (None, self.refresh_token),
+            'sessionid': (None, sessionid),
+            'redir': (None, redir)
+        }
+        headers = {
+            'Referer': redir,
+            'Origin': 'https://steamcommunity.com'
+        }
+        return self.session.post("https://login.steampowered.com/jwt/finalizelogin", headers = headers, files = files)

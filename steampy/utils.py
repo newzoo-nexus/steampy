@@ -260,6 +260,8 @@ def ping_proxy(proxies: dict):
         requests.get('https://steamcommunity.com/', proxies=proxies)
         return True
     except Exception:
+        import logging
+        logging.exception(f"Proxy not working for steamcommunity.com: {proxies}")
         raise ProxyConnectionError('Proxy not working for steamcommunity.com')
 
 

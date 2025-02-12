@@ -40,7 +40,6 @@ class SteamClient:
     ) -> None:
         self._api_key = api_key
         self._session = requests.Session()
-
         if proxies:
             self.set_proxies(proxies)
 

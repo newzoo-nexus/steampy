@@ -29,7 +29,7 @@ class LoginExecutor:
             secrets.token_bytes(32).hex()
         ]
         self._session_id = "".join(session_id_parts)
-        self.session.cookies.set("sessionid", self._session_id)
+        # self.session.cookies.set("sessionid", self._session_id)
 
     def _api_call(self, method: str, service: str, endpoint: str, version: str = 'v1', params: dict = None) -> Response:
         url = '/'.join((SteamUrl.API_URL, service, endpoint, version))
@@ -69,18 +69,18 @@ class LoginExecutor:
     def set_sessionid_cookies(self):
         community_domain = SteamUrl.COMMUNITY_URL[8:]
         community_cookie_dic = self.session.cookies.get_dict(domain = community_domain)
-        for name in ('steamLoginSecure', 'steamRefresh_steam', 'steamCountry'):
+        for name in ('steamLoginSecure', 'sessionid', 'steamRefresh_steam', 'steamCountry'):
             cookie = self.session.cookies.get_dict()[name]
-            if name in ["steamLoginSecure"]:
+            if name in ["steamLoginSecure", 'sessionid']:
                 community_cookie = create_cookie(name, community_cookie_dic[name], community_domain)
             else:
                 community_cookie = create_cookie(name, cookie, community_domain)
 
             self.session.cookies.set(**community_cookie)
-        self.session.cookies.set(**create_cookie("sessionid", self._session_id, community_domain))
+        # self.session.cookies.set(**create_cookie("sessionid", self._session_id, community_domain))
 
     def _fetch_rsa_params(self, current_number_of_repetitions: int = 0) -> dict:
-        self.session.post(SteamUrl.COMMUNITY_URL)
+        self.session.get(SteamUrl.COMMUNITY_URL)
         request_data = {'account_name': self.username}
         response = self._api_call('GET', 'IAuthenticationService', 'GetPasswordRSAPublicKey', params=request_data)
 
@@ -130,8 +130,12 @@ class LoginExecutor:
         if parameters is None:
             raise Exception('Cannot perform redirects after login, no parameters fetched')
         for pass_data in parameters:
-            pass_data['params']['steamID'] = response_dict['steamID']
-            self.session.post(pass_data['url'], pass_data['params'])
+            pass_data['params'].update({'steamID': response_dict['steamID']})
+            multipart_fields = {
+                key: (None, str(value))
+                for key, value in pass_data['params'].items()
+            }
+            self.session.post(pass_data['url'], files = multipart_fields)
 
     def _update_steam_guard(self, login_response: Response) -> None:
         client_id = login_response.json()['response']['client_id']
@@ -160,9 +164,15 @@ class LoginExecutor:
             raise
 
     def _finalize_login(self) -> Response:
+        sessionid = self.session.cookies['sessionid']
         redir = f'{SteamUrl.COMMUNITY_URL}/login/home/?goto='
-        finalized_data = {'nonce': self.refresh_token, 'sessionid': self._session_id, 'redir': redir}
-        response = self.session.post(SteamUrl.LOGIN_URL + '/jwt/finalizelogin', data=finalized_data)
-        response.raise_for_status()
-
-        return response
+        files = {
+            'nonce': (None, self.refresh_token),
+            'sessionid': (None, sessionid),
+            'redir': (None, redir)
+        }
+        headers = {
+            'Referer': redir,
+            'Origin': 'https://steamcommunity.com'
+        }
+        return self.session.post("https://login.steampowered.com/jwt/finalizelogin", headers = headers, files = files)

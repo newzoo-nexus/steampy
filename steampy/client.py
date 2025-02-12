@@ -40,6 +40,7 @@ class SteamClient:
     ) -> None:
         self._api_key = api_key
         self._session = requests.Session()
+
         if proxies:
             self.set_proxies(proxies)
 
@@ -173,7 +174,7 @@ class SteamClient:
         return merge_items_with_descriptions_from_inventory(response_dict, game) if merge else response_dict
 
     def _get_session_id(self) -> str:
-        return self._session.cookies.get_dict(domain="steamcommunity.com")['sessionid']
+        return self._session.cookies.get_dict()['sessionid']
 
     def get_trade_offers_summary(self) -> dict:
         params = {'key': self._api_key}

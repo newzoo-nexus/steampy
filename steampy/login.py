@@ -1,5 +1,4 @@
 from http import HTTPStatus
-import logging
 from base64 import b64encode
 
 from rsa import encrypt, PublicKey
@@ -10,7 +9,7 @@ from steampy.models import SteamUrl
 from steampy.utils import create_cookie
 from steampy.exceptions import InvalidCredentials, CaptchaRequired, ApiException
 
-import pprint
+
 class LoginExecutor:
     def __init__(self, username: str, password: str, shared_secret: str, session: Session) -> None:
         self.username = username
@@ -19,32 +18,15 @@ class LoginExecutor:
         self.shared_secret = shared_secret
         self.session = session
         self.refresh_token = ''
-        import uuid
-        import time
-        import secrets
-        session_id_parts = [
-            uuid.uuid4().hex,
-            username,
-            str(int(time.time())),
-            secrets.token_bytes(32).hex()
-        ]
-        self._session_id = "".join(session_id_parts)
-        # self.session.cookies.set("sessionid", self._session_id)
 
     def _api_call(self, method: str, service: str, endpoint: str, version: str = 'v1', params: dict = None) -> Response:
         url = '/'.join((SteamUrl.API_URL, service, endpoint, version))
         # All requests from the login page use the same 'Referer' and 'Origin' values
         headers = {'Referer': f'{SteamUrl.COMMUNITY_URL}/', 'Origin': SteamUrl.COMMUNITY_URL}
         if method.upper() == 'GET':
-            response =  self.session.get(url, params=params, headers=headers)
-            print(url)
-            pprint.pprint(response.json())
-            return response
+            return self.session.get(url, params=params, headers=headers)
         elif method.upper() == 'POST':
-            response =  self.session.post(url, params=params, headers=headers)
-            print(url)
-            pprint.pprint(response.json())
-            return response
+            return self.session.post(url, params=params, headers=headers)
         else:
             raise ValueError('Method must be either GET or POST')
 
@@ -66,18 +48,25 @@ class LoginExecutor:
         request_data = self._prepare_login_request_data(encrypted_password, rsa_timestamp)
         return self._api_call('POST', 'IAuthenticationService', 'BeginAuthSessionViaCredentials', params=request_data)
 
-    def set_sessionid_cookies(self):
+    def set_sessionid_cookies(self) -> None:
         community_domain = SteamUrl.COMMUNITY_URL[8:]
-        community_cookie_dic = self.session.cookies.get_dict(domain = community_domain)
+        store_domain = SteamUrl.STORE_URL[8:]
+        community_cookie_dic = self.session.cookies.get_dict(domain=community_domain)
+        store_cookie_dic = self.session.cookies.get_dict(domain=store_domain)
         for name in ('steamLoginSecure', 'sessionid', 'steamRefresh_steam', 'steamCountry'):
             cookie = self.session.cookies.get_dict()[name]
-            if name in ["steamLoginSecure", 'sessionid']:
+            if name == "steamLoginSecure":
+                store_cookie = create_cookie(name, store_cookie_dic[name], store_domain)
+            else:
+                store_cookie = create_cookie(name, cookie, store_domain)
+
+            if name in ["sessionid", "steamLoginSecure"]:
                 community_cookie = create_cookie(name, community_cookie_dic[name], community_domain)
             else:
                 community_cookie = create_cookie(name, cookie, community_domain)
 
             self.session.cookies.set(**community_cookie)
-        # self.session.cookies.set(**create_cookie("sessionid", self._session_id, community_domain))
+            self.session.cookies.set(**store_cookie)
 
     def _fetch_rsa_params(self, current_number_of_repetitions: int = 0) -> dict:
         self.session.get(SteamUrl.COMMUNITY_URL)

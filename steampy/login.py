@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     from requests import Response, Session
 
 
-
 class ApiClient:
     def __init__(self, session: Session) -> None:
         self.session = session

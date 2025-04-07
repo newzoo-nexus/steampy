@@ -1,26 +1,29 @@
-import os
-import re
+from __future__ import annotations
+
 import copy
 import math
+import re
 import struct
-from typing import List
 from decimal import Decimal
-from urllib.parse import urlparse, parse_qs
+from pathlib import Path
+from typing import TYPE_CHECKING
+from urllib.parse import parse_qs, urlparse
 
 import requests
 from bs4 import BeautifulSoup, Tag
 from requests.structures import CaseInsensitiveDict
 
-from steampy.models import GameOptions
-from steampy.exceptions import ProxyConnectionError, LoginRequired
+from steampy.exceptions import LoginRequired, ProxyConnectionError
+
+if TYPE_CHECKING:
+    from steampy.models import GameOptions
 
 
 def login_required(func):
     def func_wrapper(self, *args, **kwargs):
         if not self.was_login_executed:
             raise LoginRequired('Use login method first')
-        else:
-            return func(self, *args, **kwargs)
+        return func(self, *args, **kwargs)
 
     return func_wrapper
 
@@ -63,8 +66,10 @@ def calculate_gross_price(price_net: Decimal, publisher_fee: Decimal, steam_fee:
             fraud incidents and cover the cost of development of this and future Steam economy features. The fee is
             currently `5%` (with a minimum fee of `$0.01`). This fee may be increased or decreased by Steam in the
             future.
+
     Returns:
         Decimal: Gross price (including fees) - the amount that the buyer pays during a market transaction
+
     """
     price_net *= 100
     steam_fee_amount = int(math.floor(max(price_net * steam_fee, 1)))
@@ -84,8 +89,10 @@ def calculate_net_price(price_gross: Decimal, publisher_fee: Decimal, steam_fee:
             fraud incidents and cover the cost of development of this and future Steam economy features. The fee is
             currently `5%` (with a minimum fee of `$0.01`). This fee may be increased or decreased by Steam in the
             future.
+
     Returns:
         Decimal: Net price (without fees) - the amount that the seller receives after a market transaction.
+
     """
     price_gross *= 100
     estimated_net_price = Decimal(int(price_gross / (steam_fee + publisher_fee + 1)))
@@ -120,12 +127,8 @@ def merge_items_with_descriptions_from_offers(offers_response: dict) -> dict:
     descriptions = {get_description_key(offer): offer for offer in offers_response['response'].get('descriptions', [])}
     received_offers = offers_response['response'].get('trade_offers_received', [])
     sent_offers = offers_response['response'].get('trade_offers_sent', [])
-    offers_response['response']['trade_offers_received'] = list(
-        map(lambda offer: merge_items_with_descriptions_from_offer(offer, descriptions), received_offers)
-    )
-    offers_response['response']['trade_offers_sent'] = list(
-        map(lambda offer: merge_items_with_descriptions_from_offer(offer, descriptions), sent_offers)
-    )
+    offers_response['response']['trade_offers_received'] = [merge_items_with_descriptions_from_offer(offer, descriptions) for offer in received_offers]
+    offers_response['response']['trade_offers_sent'] = [merge_items_with_descriptions_from_offer(offer, descriptions) for offer in sent_offers]
     return offers_response
 
 
@@ -145,7 +148,7 @@ def merge_items_with_descriptions_from_listing(listings: dict, ids_to_assets_add
     return listings
 
 
-def merge_items(items: List[dict], descriptions: dict, **kwargs) -> dict:
+def merge_items(items: list[dict], descriptions: dict, **kwargs) -> dict:
     merged_items = {}
 
     for item in items:
@@ -181,7 +184,7 @@ def get_market_listings_from_html(html: str) -> dict:
 
 
 def get_sell_listings_from_node(node: Tag) -> dict:
-    sell_listings_raw = node.findAll('div', {'id': re.compile('mylisting_\d+')})
+    sell_listings_raw = node.findAll('div', {'id': re.compile(r'mylisting_\d+')})
     sell_listings_dict = {}
 
     for listing_raw in sell_listings_raw:
@@ -225,7 +228,7 @@ def get_buy_orders_from_node(node: Tag) -> dict:
 
 def get_listing_id_to_assets_address_from_html(html: str) -> dict:
     listing_id_to_assets_address = {}
-    regex = "CreateItemHoverFromContainer\( [\w]+, 'mylisting_([\d]+)_[\w]+', ([\d]+), '([\d]+)', '([\d]+)', [\d]+ \);"
+    regex = r"CreateItemHoverFromContainer\( [\w]+, 'mylisting_([\d]+)_[\w]+', ([\d]+), '([\d]+)', '([\d]+)', [\d]+ \);"
 
     for match in re.findall(regex, html):
         listing_id_to_assets_address[match[0]] = [str(match[1]), match[2], match[3]]
@@ -243,19 +246,19 @@ def get_key_value_from_url(url: str, key: str, case_sensitive: bool = True) -> s
 
 
 def load_credentials():
-    dirname = os.path.dirname(os.path.abspath(__file__))
-    with open(f'{dirname}/../secrets/credentials.pwd', 'r') as f:
+    dirname = Path(__file__).resolve().parent
+    with Path(f'{dirname}/../secrets/credentials.pwd').open(encoding='utf-8') as f:
         return [Credentials(line.split()[0], line.split()[1], line.split()[2]) for line in f]
 
 
 class Credentials:
-    def __init__(self, login: str, password: str, api_key: str):
+    def __init__(self, login: str, password: str, api_key: str) -> None:
         self.login = login
         self.password = password
         self.api_key = api_key
 
 
-def ping_proxy(proxies: dict):
+def ping_proxy(proxies: dict) -> bool:
     try:
         requests.get('https://steamcommunity.com/', proxies=proxies)
         return True

@@ -1,14 +1,15 @@
-from setuptools import setup
 import sys
 
-if not sys.version_info[0] == 3 and sys.version_info[1] < 8:
-    sys.exit('Python < 3.8 is not supported')
+from setuptools import setup
 
-version = '1.1.2'
+if sys.version_info < (3, 12):
+    sys.exit("Python < 3.12 is not supported")
+
+version = '1.2.0'
 
 setup(
     name='steampy',
-    packages=['steampy', 'test', 'examples', ],
+    packages=['steampy', 'test', 'examples'],
     version=version,
     description='A Steam lib for trade automation',
     author='Michał Bukowski',
@@ -16,11 +17,11 @@ setup(
     license='MIT',
     url='https://github.com/bukson/steampy',
     download_url='https://github.com/bukson/steampy/tarball/' + version,
-    keywords=['steam', 'trade', ],
+    keywords=['steam', 'trade'],
     classifiers=[],
     install_requires=[
         "requests",
         "beautifulsoup4",
-        "rsa"
+        "rsa",
     ],
 )

@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from base64 import b64encode
 from http import HTTPStatus
-import time
 from typing import TYPE_CHECKING
 
 from rsa import PublicKey, encrypt
-import logging
+
 from steampy import guard
 from steampy.exceptions import ApiException, CaptchaRequired, InvalidCredentials
 from steampy.models import SteamUrl
@@ -16,12 +15,16 @@ if TYPE_CHECKING:
     from requests import Response, Session
 
 
-
-class ApiClient:
-    def __init__(self, session: Session) -> None:
+class LoginExecutor:
+    def __init__(self, username: str, password: str, shared_secret: str, session: Session) -> None:
+        self.username = username
+        self.password = password
+        self.one_time_code = ''
+        self.shared_secret = shared_secret
         self.session = session
+        self.refresh_token = ''
 
-    def __call__(self, method: str, service: str, endpoint: str, version: str = 'v1', params: dict | None = None) -> Response:
+    def _api_call(self, method: str, service: str, endpoint: str, version: str = 'v1', params: dict | None = None) -> Response:
         url = f'{SteamUrl.API_URL}/{service}/{endpoint}/{version}'
         # All requests from the login page use the same 'Referer' and 'Origin' values
         headers = {'Referer': f'{SteamUrl.COMMUNITY_URL}/', 'Origin': SteamUrl.COMMUNITY_URL}
@@ -31,89 +34,12 @@ class ApiClient:
             return self.session.post(url, data=params, headers=headers)
         raise ValueError('Method must be either GET or POST')
 
-
-
-class TwoFactorExecutor:
-    CODE_TYPE = 3
-    NUM_ATTEMPTS = 3
-    FAILURE_DELAY = 30
-
-    def __init__(self, session: Session, shared_secret: str) -> None:
-        self.api_client = ApiClient(session)
-        self.shared_secret = shared_secret
-        self.logger = logging.getLogger(__name__)
-
-    def __call__(self, client_id, steam_id) -> None:
-        for _ in range(self.NUM_ATTEMPTS):
-            eresult = self.attempt(client_id, steam_id)
-            if eresult == 1:
-                return
-            if eresult == 88:
-                self.logger.warning(f"Two factor code mismatch. Retrying in {self.FAILURE_DELAY} seconds")
-                time.sleep(self.FAILURE_DELAY)
-        raise Exception(f"Failed to update Steam guard after {self.NUM_ATTEMPTS} attempts")
-
-    def attempt(self, client_id: str, steam_id: str) -> None:
-        code = guard.generate_one_time_code(self.shared_secret)
-
-        update_data = {'client_id': client_id, 'steamid': steam_id, 'code_type': self.CODE_TYPE, 'code': code}
-        response = self.api_client(
-            'POST', 'IAuthenticationService', 'UpdateAuthSessionWithSteamGuardCode', params=update_data,
-        )
-        response.raise_for_status()
-        return int(response.headers.get('X-eresult'))
-
-class AuthStatusExecutor:
-    def __init__(self, session: Session) -> None:
-        self.api_client = ApiClient(session)
-
-    def __call__(self, client_id: str, request_id: str) -> None:
-        pool_data = {'client_id': client_id, 'request_id': request_id}
-        response = self.api_client('POST', 'IAuthenticationService', 'PollAuthSessionStatus', params=pool_data)
-        data = response.json()
-        eresult = response.headers.get('X-eresult')
-
-        if 'refresh_token' not in data['response']:
-            raise ApiException(
-                "Credentials did not produce an authentication token. "
-                f"eresult={eresult} "
-                f"status_code={response.status_code} "
-                f"response={response.text}"
-            )
-        return data['response']['refresh_token']
-
-
-class LoginExecutor:
-    def __init__(self, username: str, password: str, shared_secret: str, session: Session) -> None:
-        self.two_factor_executor = TwoFactorExecutor(session, shared_secret)
-        self.auth_status_executor = AuthStatusExecutor(session)
-        self.api_client = ApiClient(session)
-        self.logger = logging.getLogger(f"[{username}]{__name__}")
-        self.username = username
-        self.password = password
-        self.one_time_code = ''
-        self.shared_secret = shared_secret
-        self.session = session
-        self.refresh_token = ''
-
     def login(self) -> Session:
         login_response = self._send_login_request()
-        response_body = login_response.json()
-        if not response_body['response']:
-            self.logger.error(
-                'No response received from Steam API. Please try again later. '
-                f"status_code={login_response.status_code} "
-                f"response={login_response.text} "
-                f"headers={login_response.headers} "
-            )
-            raise ApiException("No response received from Steam API. ")
-
-        self._check_for_captcha(response_body)
-        self._update_steam_guard(
-            response_body["response"]['client_id'],
-            response_body["response"]['steamid'],
-            response_body["response"]['request_id']
-        )
+        if not login_response.json()['response']:
+            raise ApiException('No response received from Steam API. Please try again later.')
+        self._check_for_captcha(login_response)
+        self._update_steam_guard(login_response)
         finalized_response = self._finalize_login()
         self._perform_redirects(finalized_response.json())
         self.set_sessionid_cookies()
@@ -124,7 +50,7 @@ class LoginExecutor:
         encrypted_password = self._encrypt_password(rsa_params)
         rsa_timestamp = rsa_params['rsa_timestamp']
         request_data = self._prepare_login_request_data(encrypted_password, rsa_timestamp)
-        return self.api_client('POST', 'IAuthenticationService', 'BeginAuthSessionViaCredentials', params=request_data)
+        return self._api_call('POST', 'IAuthenticationService', 'BeginAuthSessionViaCredentials', params=request_data)
 
     def set_sessionid_cookies(self) -> None:
         community_domain = SteamUrl.COMMUNITY_URL[8:]
@@ -147,9 +73,9 @@ class LoginExecutor:
             self.session.cookies.set(**store_cookie)
 
     def _fetch_rsa_params(self, current_number_of_repetitions: int = 0) -> dict:
-        self.session.get(SteamUrl.COMMUNITY_URL)
+        self.session.post(SteamUrl.COMMUNITY_URL)
         request_data = {'account_name': self.username}
-        response = self.api_client('GET', 'IAuthenticationService', 'GetPasswordRSAPublicKey', params=request_data)
+        response = self._api_call('GET', 'IAuthenticationService', 'GetPasswordRSAPublicKey', params=request_data)
 
         if response.status_code == HTTPStatus.OK and 'response' in response.json():
             key_data = response.json()['response']
@@ -177,9 +103,15 @@ class LoginExecutor:
         }
 
     @staticmethod
-    def _check_for_captcha(response_body) -> None:
-        if response_body.get('captcha_needed', False):
+    def _check_for_captcha(login_response: Response) -> None:
+        if login_response.json().get('captcha_needed', False):
             raise CaptchaRequired('Captcha required')
+
+    def _enter_steam_guard_if_necessary(self, login_response: Response) -> Response:
+        if login_response.json()['requires_twofactor']:
+            self.one_time_code = guard.generate_one_time_code(self.shared_secret)
+            return self._send_login_request()
+        return login_response
 
     @staticmethod
     def _assert_valid_credentials(login_response: Response) -> None:
@@ -191,27 +123,32 @@ class LoginExecutor:
         if parameters is None:
             raise Exception('Cannot perform redirects after login, no parameters fetched')
         for pass_data in parameters:
-            pass_data['params'].update({'steamID': response_dict['steamID']})
-            multipart_fields = {
-                key: (None, str(value))
-                for key, value in pass_data['params'].items()
-            }
-            self.session.post(pass_data['url'], files = multipart_fields)
+            pass_data['params']['steamID'] = response_dict['steamID']
+            self.session.post(pass_data['url'], pass_data['params'])
 
-    def _update_steam_guard(self, client_id, steamid, request_id) -> None:
-        self.two_factor_executor(client_id, steamid)
-        self.refresh_token = self.auth_status_executor(client_id, request_id)
+    def _update_steam_guard(self, login_response: Response) -> None:
+        client_id = login_response.json()['response']['client_id']
+        steamid = login_response.json()['response']['steamid']
+        request_id = login_response.json()['response']['request_id']
+        code_type = 3
+        code = guard.generate_one_time_code(self.shared_secret)
+
+        update_data = {'client_id': client_id, 'steamid': steamid, 'code_type': code_type, 'code': code}
+        response = self._api_call(
+            'POST', 'IAuthenticationService', 'UpdateAuthSessionWithSteamGuardCode', params=update_data,
+        )
+        if response.status_code == HTTPStatus.OK:
+            self._pool_sessions_steam(client_id, request_id)
+        else:
+            raise Exception('Cannot update Steam guard')
+
+    def _pool_sessions_steam(self, client_id: str, request_id: str) -> None:
+        pool_data = {'client_id': client_id, 'request_id': request_id}
+        response = self._api_call('POST', 'IAuthenticationService', 'PollAuthSessionStatus', params=pool_data)
+        self.refresh_token = response.json()['response']['refresh_token']
 
     def _finalize_login(self) -> Response:
         sessionid = self.session.cookies['sessionid']
         redir = f'{SteamUrl.COMMUNITY_URL}/login/home/?goto='
-        files = {
-            'nonce': (None, self.refresh_token),
-            'sessionid': (None, sessionid),
-            'redir': (None, redir)
-        }
-        headers = {
-            'Referer': redir,
-            'Origin': 'https://steamcommunity.com'
-        }
-        return self.session.post("https://login.steampowered.com/jwt/finalizelogin", headers = headers, files = files)
+        finalized_data = {'nonce': self.refresh_token, 'sessionid': sessionid, 'redir': redir}
+        return self.session.post(SteamUrl.LOGIN_URL + '/jwt/finalizelogin', data=finalized_data)

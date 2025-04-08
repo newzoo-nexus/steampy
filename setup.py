@@ -10,7 +10,7 @@ setup(
     name='steampy',
     packages=['steampy', 'test', 'examples', ],
     version=version,
-    description='A Steam lib for trade automation',
+    description='A Steam lib for API interactions. Forked from bukson/steampy',
     author='Brian Fouts',
     author_email='brian.fouts@newzoo.com',
     license='MIT',
